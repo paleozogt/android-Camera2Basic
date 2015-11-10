@@ -68,6 +68,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
@@ -229,6 +231,8 @@ public class Camera2BasicFragment extends Fragment
      */
     private ImageReader mImageReader;
 
+    private ImageReader mPreviewReader;
+
     /**
      * This is the output file for our picture.
      */
@@ -247,6 +251,23 @@ public class Camera2BasicFragment extends Fragment
         }
 
     };
+
+    private long mFrameCount= 0;
+    private Timer mFpsTimer;
+
+    private final ImageReader.OnImageAvailableListener mOnPreviewAvailableListener
+            = new ImageReader.OnImageAvailableListener() {
+
+        @Override
+        public void onImageAvailable(ImageReader reader) {
+            Image image= reader.acquireLatestImage();
+            //Log.d(TAG, "onImageAvailable " + image.getTimestamp());
+            mFrameCount++;
+            image.close();
+        }
+
+    };
+
 
     /**
      * {@link CaptureRequest.Builder} for the camera preview
@@ -517,6 +538,11 @@ public class Camera2BasicFragment extends Fragment
                 mImageReader.setOnImageAvailableListener(
                         mOnImageAvailableListener, mBackgroundHandler);
 
+                mPreviewReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
+                        ImageFormat.YUV_420_888, /*maxImages*/2);
+                mPreviewReader.setOnImageAvailableListener(
+                        mOnPreviewAvailableListener, mBackgroundHandler);
+
                 // Find out if we need to swap dimension to get the preview size relative to sensor
                 // coordinate.
                 int displayRotation = activity.getWindowManager().getDefaultDisplay().getRotation();
@@ -639,6 +665,10 @@ public class Camera2BasicFragment extends Fragment
                 mImageReader.close();
                 mImageReader = null;
             }
+            if (null != mPreviewReader) {
+                mPreviewReader.close();
+                mPreviewReader = null;
+            }
         } catch (InterruptedException e) {
             throw new RuntimeException("Interrupted while trying to lock camera closing.", e);
         } finally {
@@ -687,9 +717,26 @@ public class Camera2BasicFragment extends Fragment
             mPreviewRequestBuilder
                     = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             mPreviewRequestBuilder.addTarget(surface);
+            mPreviewRequestBuilder.addTarget(mPreviewReader.getSurface());
+
+            mFrameCount= 0;
+            mFpsTimer= new Timer();
+            mFpsTimer.schedule(new TimerTask() {
+                long lastFpsCheck= System.nanoTime();
+
+                @Override
+                public void run() {
+                    long now= System.nanoTime();
+                    double secs= (now - lastFpsCheck) / 1e9;
+                    double fps= mFrameCount / secs;
+                    Log.d(TAG, "fps " + fps);
+                    lastFpsCheck= now;
+                    mFrameCount= 0;
+                }
+            }, 1000, 1000);
 
             // Here, we create a CameraCaptureSession for camera preview.
-            mCameraDevice.createCaptureSession(Arrays.asList(surface, mImageReader.getSurface()),
+            mCameraDevice.createCaptureSession(Arrays.asList(surface, mImageReader.getSurface(), mPreviewReader.getSurface()),
                     new CameraCaptureSession.StateCallback() {
 
                         @Override
