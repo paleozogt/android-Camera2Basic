@@ -476,6 +476,7 @@ public class Camera2BasicFragment extends Fragment
 
     @Override
     public void onPause() {
+        mFpsTimer.cancel();
         closeCamera();
         stopBackgroundThread();
         super.onPause();
