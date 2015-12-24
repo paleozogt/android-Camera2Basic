@@ -123,12 +123,12 @@ public class Camera2BasicFragment extends Fragment
     /**
      * Max preview width that is guaranteed by Camera2 API
      */
-    private static final int MAX_PREVIEW_WIDTH = 1920;
+    private static final int MAX_PREVIEW_WIDTH = 720; //1920;
 
     /**
      * Max preview height that is guaranteed by Camera2 API
      */
-    private static final int MAX_PREVIEW_HEIGHT = 1080;
+    private static final int MAX_PREVIEW_HEIGHT = 480; //1080;
 
     /**
      * {@link TextureView.SurfaceTextureListener} handles several lifecycle events on a
@@ -190,6 +190,7 @@ public class Camera2BasicFragment extends Fragment
 
         @Override
         public void onOpened(@NonNull CameraDevice cameraDevice) {
+            Log.d(TAG, "onOpened");
             // This method is called when the camera is opened.  We start camera preview here.
             mCameraOpenCloseLock.release();
             mCameraDevice = cameraDevice;
@@ -197,7 +198,13 @@ public class Camera2BasicFragment extends Fragment
         }
 
         @Override
+        public void onClosed(@NonNull CameraDevice cameraDevice) {
+            Log.d(TAG, "onClosed");
+        }
+
+        @Override
         public void onDisconnected(@NonNull CameraDevice cameraDevice) {
+            Log.d(TAG, "onDisconnected");
             mCameraOpenCloseLock.release();
             cameraDevice.close();
             mCameraDevice = null;
@@ -205,6 +212,7 @@ public class Camera2BasicFragment extends Fragment
 
         @Override
         public void onError(@NonNull CameraDevice cameraDevice, int error) {
+            Log.d(TAG, "onError");
             mCameraOpenCloseLock.release();
             cameraDevice.close();
             mCameraDevice = null;
@@ -520,7 +528,7 @@ public class Camera2BasicFragment extends Fragment
 
                 // We don't use a front facing camera in this sample.
                 Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
-                if (facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
                     continue;
                 }
 
@@ -637,6 +645,7 @@ public class Camera2BasicFragment extends Fragment
         Activity activity = getActivity();
         CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
         try {
+            Log.d(TAG, "openCamera " + mCameraOpenCloseLock.availablePermits());
             if (!mCameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
                 throw new RuntimeException("Time out waiting to lock camera opening.");
             }
@@ -653,6 +662,7 @@ public class Camera2BasicFragment extends Fragment
      */
     private void closeCamera() {
         try {
+            Log.d(TAG, "closeCamera " + mCameraOpenCloseLock.availablePermits());
             mCameraOpenCloseLock.acquire();
             if (null != mCaptureSession) {
                 mCaptureSession.close();
@@ -675,6 +685,7 @@ public class Camera2BasicFragment extends Fragment
         } finally {
             mCameraOpenCloseLock.release();
         }
+        Log.d(TAG, "closeCamera done");
     }
 
     /**
@@ -690,6 +701,7 @@ public class Camera2BasicFragment extends Fragment
      * Stops the background thread and its {@link Handler}.
      */
     private void stopBackgroundThread() {
+        Log.d(TAG, "stopBackgroundThread");
         mBackgroundThread.quitSafely();
         try {
             mBackgroundThread.join();
@@ -698,6 +710,7 @@ public class Camera2BasicFragment extends Fragment
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+        Log.d(TAG, "stopBackgroundThread done");
     }
 
     /**
@@ -712,13 +725,7 @@ public class Camera2BasicFragment extends Fragment
             texture.setDefaultBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
 
             // This is the output Surface we need to start preview.
-            Surface surface = new Surface(texture);
-
-            // We set up a CaptureRequest.Builder with the output Surface.
-            mPreviewRequestBuilder
-                    = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            mPreviewRequestBuilder.addTarget(surface);
-            mPreviewRequestBuilder.addTarget(mPreviewReader.getSurface());
+            final Surface surface = new Surface(texture);
 
             mFrameCount= 0;
             mFpsTimer= new Timer();
@@ -750,6 +757,12 @@ public class Camera2BasicFragment extends Fragment
                             // When the session is ready, we start displaying the preview.
                             mCaptureSession = cameraCaptureSession;
                             try {
+                                // We set up a CaptureRequest.Builder with the output Surface.
+                                mPreviewRequestBuilder
+                                        = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                                mPreviewRequestBuilder.addTarget(surface);
+                                mPreviewRequestBuilder.addTarget(mPreviewReader.getSurface());
+
                                 // Auto focus should be continuous for camera preview.
                                 mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
                                         CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
