@@ -43,6 +43,7 @@ import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaMuxer;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -57,6 +58,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.Toast;
 
 import java.io.File;
@@ -276,6 +278,7 @@ public class Camera2BasicFragment extends Fragment
 
     };
 
+    MediaMuxer mMediaMuxer;
 
     /**
      * {@link CaptureRequest.Builder} for the camera preview
@@ -457,6 +460,7 @@ public class Camera2BasicFragment extends Fragment
     public void onViewCreated(final View view, Bundle savedInstanceState) {
         view.findViewById(R.id.picture).setOnClickListener(this);
         view.findViewById(R.id.info).setOnClickListener(this);
+        view.findViewById(R.id.toggle_record).setOnClickListener(this);
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
     }
 
@@ -944,6 +948,17 @@ public class Camera2BasicFragment extends Fragment
         }
     }
 
+    private void toggleRecord() throws IOException {
+        ((Button)getView().findViewById(R.id.toggle_record)).setText(mMediaMuxer == null ? R.string.stop_record : R.string.start_record);
+        if (mMediaMuxer == null) {
+            File videoFileDir= getActivity().getDir("video", Context.MODE_PRIVATE);
+            File videoFile= new File(videoFileDir, "video.mp4");
+            mMediaMuxer= new MediaMuxer(videoFile.toString(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        } else {
+            mMediaMuxer= null;
+        }
+    }
+
     @Override
     public void onClick(View view) {
         switch (view.getId()) {
@@ -961,6 +976,13 @@ public class Camera2BasicFragment extends Fragment
                 }
                 break;
             }
+            case R.id.toggle_record:
+                try {
+                    toggleRecord();
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+                break;
         }
     }
 
