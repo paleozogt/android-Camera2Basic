@@ -28,7 +28,10 @@ public class ImageUtils {
             image.compressToJpeg(new Rect(0, 0, image.getWidth(), image.getHeight()), 100, fs);
             fs.close();
 
-            rotateImage(imageFile, imageRotation);
+            // add rotation tag
+            ExifInterface exif = new ExifInterface(imageFile.getAbsolutePath());
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION, Integer.toString(rotationDegreesToExifOrientation(imageRotation)));
+            exif.saveAttributes();
         } catch (FileNotFoundException e) {
             throw new RuntimeException(e);
         } catch (IOException e) {
@@ -67,6 +70,21 @@ public class ImageUtils {
                 return 270;
             default:
                 return 0;
+        }
+    }
+
+    public static int rotationDegreesToExifOrientation(int rotationDegrees) {
+        switch (rotationDegrees) {
+            case 0:
+                return ExifInterface.ORIENTATION_NORMAL;
+            case 90:
+                return ExifInterface.ORIENTATION_ROTATE_90;
+            case 180:
+                return ExifInterface.ORIENTATION_ROTATE_180;
+            case 270:
+                return ExifInterface.ORIENTATION_ROTATE_270;
+            default:
+                return ExifInterface.ORIENTATION_UNDEFINED;
         }
     }
 
