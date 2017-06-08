@@ -65,15 +65,19 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class Camera2BasicFragment extends Fragment
         implements View.OnClickListener, FragmentCompat.OnRequestPermissionsResultCallback {
@@ -242,6 +246,18 @@ public class Camera2BasicFragment extends Fragment
     private ImageReader mImageReader;
 
     private ImageReader mPreviewReader;
+    private ImageConverter mImageConverter;
+    private Thread mImageProcessingThread;
+    private AtomicReference<Image> mImageRef= new AtomicReference<>();
+
+    private long mStartTimeEpochMS;
+    private long mFirstVideoTimeMonoMS;
+    private SimpleDateFormat dateFormatter;
+
+    private int imageRotation;
+
+    private File mOutputDir;
+    private File mImagesDir, mVideoDir;
 
     /**
      * This is the output file for our picture.
@@ -270,13 +286,46 @@ public class Camera2BasicFragment extends Fragment
 
         @Override
         public void onImageAvailable(ImageReader reader) {
-            Image image= reader.acquireLatestImage();
-            //Log.d(TAG, "onImageAvailable " + image.getTimestamp());
-            mFrameCount++;
-            image.close();
+            Image image= reader.acquireNextImage();
+            if (image != null && !mImageRef.compareAndSet(null, image)) {
+                image.close();
+            }
         }
-
     };
+
+    private final Runnable mImageProcessingRunnable= new Runnable() {
+        @Override
+        public void run() {
+            while (mBackgroundHandler != null) {
+                Image image= mImageRef.get();
+                if (image == null) {
+                    try { Thread.sleep(5); } catch (InterruptedException e) { }
+                } else {
+                    processPreviewImage(image);
+                    mImageRef.set(null);
+                }
+            }
+        }
+    };
+
+    void processPreviewImage(Image image) {
+        // convert the data
+        if (mImageConverter == null) mImageConverter= new ImageConverter(image);
+        byte[] imageBytes= mImageConverter.getInterleavedDataFromImage(image);
+
+        // get the timestamp
+        long timestampMonoMS= (long)(image.getTimestamp() * 1e-6);
+        if (mFirstVideoTimeMonoMS == 0) mFirstVideoTimeMonoMS= timestampMonoMS;
+        long timestampEpochMS= mStartTimeEpochMS + (timestampMonoMS - mFirstVideoTimeMonoMS);
+
+        // free up the image before we do any more work
+        image.close();
+
+        File imageFile= new File(mImagesDir, dateFormatter.format(new Date(timestampEpochMS)) + ".jpg");
+        ImageUtils.saveYuvImage(imageBytes, mImageConverter.getWidth(), mImageConverter.getHeight(), imageRotation, imageFile);
+
+        mFrameCount++;
+    }
 
     MediaMuxer mMediaMuxer;
 
@@ -467,7 +516,20 @@ public class Camera2BasicFragment extends Fragment
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
-        mFile = new File(getActivity().getExternalFilesDir(null), "pic.jpg");
+
+        dateFormatter= new SimpleDateFormat("yyyyMMdd'T'HHmmss.SSS'Z'");
+        dateFormatter.setTimeZone(TimeZone.getTimeZone("UTC"));
+
+        File dir= new File(getActivity().getExternalFilesDir(null), "media");
+
+        mOutputDir= new File(dir, dateFormatter.format(new Date()));
+        mImagesDir= new File(mOutputDir, "images");
+        mVideoDir= new File(mOutputDir, "video");
+
+        mImagesDir.mkdirs();
+        mVideoDir.mkdirs();
+
+        mFile = new File(mImagesDir, "pic.jpg");
     }
 
     @Override
@@ -578,6 +640,9 @@ public class Camera2BasicFragment extends Fragment
                     default:
                         Log.e(TAG, "Display rotation is invalid: " + displayRotation);
                 }
+
+                int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+                imageRotation= getOrientation(rotation);
 
                 Point displaySize = new Point();
                 activity.getWindowManager().getDefaultDisplay().getSize(displaySize);
@@ -699,6 +764,9 @@ public class Camera2BasicFragment extends Fragment
         mBackgroundThread = new HandlerThread("CameraBackground");
         mBackgroundThread.start();
         mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
+
+        mImageProcessingThread= new Thread(mImageProcessingRunnable, "ImageProcessor");
+        mImageProcessingThread.start();
     }
 
     /**
@@ -711,9 +779,13 @@ public class Camera2BasicFragment extends Fragment
             mBackgroundThread.join();
             mBackgroundThread = null;
             mBackgroundHandler = null;
+
+            mImageProcessingThread.join();
+            mImageProcessingThread= null;
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+
         Log.d(TAG, "stopBackgroundThread done");
     }
 
@@ -774,6 +846,7 @@ public class Camera2BasicFragment extends Fragment
                                 setAutoFlash(mPreviewRequestBuilder);
 
                                 // Finally, we start displaying the camera preview.
+                                mStartTimeEpochMS= System.currentTimeMillis();
                                 mPreviewRequest = mPreviewRequestBuilder.build();
                                 mCaptureSession.setRepeatingRequest(mPreviewRequest,
                                         mCaptureCallback, mBackgroundHandler);
@@ -890,8 +963,7 @@ public class Camera2BasicFragment extends Fragment
             setAutoFlash(captureBuilder);
 
             // Orientation
-            int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, getOrientation(rotation));
+            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, getOrientation(imageRotation));
 
             CameraCaptureSession.CaptureCallback CaptureCallback
                     = new CameraCaptureSession.CaptureCallback() {
