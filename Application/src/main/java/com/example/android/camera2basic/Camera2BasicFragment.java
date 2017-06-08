@@ -578,16 +578,7 @@ public class Camera2BasicFragment extends Fragment
         dateFormatter= new SimpleDateFormat("yyyyMMdd'T'HHmmss.SSS'Z'");
         dateFormatter.setTimeZone(TimeZone.getTimeZone("UTC"));
 
-        File dir= new File(getActivity().getExternalFilesDir(null), "media");
-
-        mOutputDir= new File(dir, dateFormatter.format(new Date()));
-        mImagesDir= new File(mOutputDir, "images");
-        mVideoDir= new File(mOutputDir, "video");
-
-        mImagesDir.mkdirs();
-        mVideoDir.mkdirs();
-
-        mFile = new File(mImagesDir, "pic.jpg");
+        mFile = new File(getActivity().getExternalFilesDir(null), "pic.jpg");
     }
 
     @Override
@@ -1075,6 +1066,14 @@ public class Camera2BasicFragment extends Fragment
     private void toggleRecord() throws IOException {
         ((Button)getView().findViewById(R.id.toggle_record)).setText(mMediaMuxer == null ? R.string.stop_record : R.string.start_record);
         if (!mRecording.get()) {
+            mOutputDir= new File(new File(getActivity().getExternalFilesDir(null), "media"), dateFormatter.format(new Date()));
+            mImagesDir= new File(mOutputDir, "images");
+            mImagesDir.mkdirs();
+            mVideoDir= new File(mOutputDir, "video");
+            mVideoDir.mkdirs();
+
+            File videoFile= new File(mVideoDir, dateFormatter.format(new Date()) + ".mp4");
+
             MediaFormat videoFormat = MediaFormat.createVideoFormat(VIDEO_MIME_TYPE, mPreviewReader.getWidth(), mPreviewReader.getHeight());
             videoFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
             videoFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
@@ -1085,8 +1084,6 @@ public class Camera2BasicFragment extends Fragment
             mVideoCodec= MediaCodec.createEncoderByType(VIDEO_MIME_TYPE);
             mVideoCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
 
-            mVideoDir.mkdirs();
-            File videoFile= new File(mVideoDir, dateFormatter.format(new Date()) + ".mp4");
             mMediaMuxer= new MediaMuxer(videoFile.toString(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             mMediaMuxer.setOrientationHint(imageRotation);
 
