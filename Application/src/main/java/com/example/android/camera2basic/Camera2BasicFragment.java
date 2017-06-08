@@ -301,8 +301,12 @@ public class Camera2BasicFragment extends Fragment
     private final Runnable mRecordingRunnable = new Runnable() {
         @Override
         public void run() {
+            // clear out whatever's in the ref (it may be old)
+            Image image= mImageRef.getAndSet(null);
+            if (image != null) image.close();
+
             while (mRecording.get()) {
-                Image image= mImageRef.get();
+                image= mImageRef.get();
                 if (image == null) {
                     try { Thread.sleep(5); } catch (InterruptedException e) { }
                 } else {
@@ -1059,8 +1063,11 @@ public class Camera2BasicFragment extends Fragment
     }
 
     private void toggleRecord() throws IOException {
-        ((Button)getView().findViewById(R.id.toggle_record)).setText(mMediaMuxer == null ? R.string.stop_record : R.string.start_record);
-        if (!mRecording.get()) {
+        boolean isRecording= mRecording.get();
+        ((Button)getView().findViewById(R.id.toggle_record)).setText(isRecording ? R.string.start_record : R.string.stop_record);
+
+        Log.d(TAG, "toggleRecord to " + !isRecording);
+        if (!isRecording) {
             mOutputDir= new File(new File(getActivity().getExternalFilesDir(null), "media"), dateFormatter.format(new Date()));
             mImagesDir= new File(mOutputDir, "images");
             mImagesDir.mkdirs();
