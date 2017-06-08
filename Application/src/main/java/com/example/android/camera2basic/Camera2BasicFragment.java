@@ -43,6 +43,10 @@ import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.media.MediaMetadataEditor;
 import android.media.MediaMuxer;
 import android.os.Bundle;
 import android.os.Handler;
@@ -77,6 +81,7 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class Camera2BasicFragment extends Fragment
@@ -247,11 +252,11 @@ public class Camera2BasicFragment extends Fragment
 
     private ImageReader mPreviewReader;
     private ImageConverter mImageConverter;
-    private Thread mImageProcessingThread;
+    private Thread mRecordingThread;
     private AtomicReference<Image> mImageRef= new AtomicReference<>();
 
     private long mStartTimeEpochMS;
-    private long mFirstVideoTimeMonoMS;
+    private long mFirstVideoTimeMonoNS;
     private SimpleDateFormat dateFormatter;
 
     private int imageRotation;
@@ -293,41 +298,94 @@ public class Camera2BasicFragment extends Fragment
         }
     };
 
-    private final Runnable mImageProcessingRunnable= new Runnable() {
+    private final Runnable mRecordingRunnable = new Runnable() {
         @Override
         public void run() {
-            while (mBackgroundHandler != null) {
+            while (mRecording.get()) {
                 Image image= mImageRef.get();
                 if (image == null) {
                     try { Thread.sleep(5); } catch (InterruptedException e) { }
                 } else {
-                    processPreviewImage(image);
+                    recordImage(image);
                     mImageRef.set(null);
                 }
             }
         }
     };
 
-    void processPreviewImage(Image image) {
+    void recordImage(Image image) {
         // convert the data
         if (mImageConverter == null) mImageConverter= new ImageConverter(image);
         byte[] imageBytes= mImageConverter.getInterleavedDataFromImage(image);
 
         // get the timestamp
-        long timestampMonoMS= (long)(image.getTimestamp() * 1e-6);
-        if (mFirstVideoTimeMonoMS == 0) mFirstVideoTimeMonoMS= timestampMonoMS;
-        long timestampEpochMS= mStartTimeEpochMS + (timestampMonoMS - mFirstVideoTimeMonoMS);
+        long timestampMonoNS= image.getTimestamp();
+        if (mFirstVideoTimeMonoNS == 0) mFirstVideoTimeMonoNS = timestampMonoNS;
 
         // free up the image before we do any more work
         image.close();
 
-        File imageFile= new File(mImagesDir, dateFormatter.format(new Date(timestampEpochMS)) + ".jpg");
-        ImageUtils.saveYuvImage(imageBytes, mImageConverter.getWidth(), mImageConverter.getHeight(), imageRotation, imageFile);
+        saveImage(imageBytes, timestampMonoNS);
+        encodeImage(imageBytes, timestampMonoNS);
 
         mFrameCount++;
     }
 
+    void saveImage(byte[] imageBytes, long timestampMonoNS) {
+        long timestampEpochMS= mStartTimeEpochMS + nsToMs(timestampMonoNS - mFirstVideoTimeMonoNS);
+
+        File imageFile= new File(mImagesDir, dateFormatter.format(new Date(timestampEpochMS)) + ".jpg");
+        ImageUtils.saveYuvImage(imageBytes, mImageConverter.getWidth(), mImageConverter.getHeight(), imageRotation, imageFile);
+    }
+
+    void encodeImage(byte[] imageBytes, long timestampMonoNS) {
+        long timestampMonoUS= nsToUs(timestampMonoNS - mFirstVideoTimeMonoNS);
+
+        // encode the frame
+        int inputBufferIndex= mVideoCodec.dequeueInputBuffer(1);
+        if (inputBufferIndex >= 0) {
+            ByteBuffer inputBuffer= mVideoCodec.getInputBuffer(inputBufferIndex);
+            inputBuffer.put(imageBytes, 0, imageBytes.length);
+            mVideoCodec.queueInputBuffer(inputBufferIndex, 0, imageBytes.length, timestampMonoUS, 0);
+        }
+
+        drainEncoder();
+    }
+
+    void drainEncoder() {
+        while (true) {
+            int outputBufferIndex= mVideoCodec.dequeueOutputBuffer(mVideoCodecBufferInfo, 1);
+            if (outputBufferIndex >= 0) {
+                ByteBuffer outputBuffer = mVideoCodec.getOutputBuffer(outputBufferIndex);
+                mMediaMuxer.writeSampleData(mVideoTrackIndex, outputBuffer, mVideoCodecBufferInfo);
+                mVideoCodec.releaseOutputBuffer(outputBufferIndex, false);
+            } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                mVideoTrackIndex= mMediaMuxer.addTrack(mVideoCodec.getOutputFormat());
+                mMediaMuxer.start();
+            } else {
+                break;
+            }
+        }
+    }
+
+    long nsToMs(long ns) {
+        return (long)(ns * 1e-6);
+    }
+
+    long nsToUs(long ns) {
+        return (long)(ns * 1e-3);
+    }
+
+    AtomicBoolean mRecording = new AtomicBoolean();
     MediaMuxer mMediaMuxer;
+    MediaCodec mVideoCodec;
+    int mVideoTrackIndex;
+    MediaCodec.BufferInfo mVideoCodecBufferInfo= new MediaCodec.BufferInfo();
+
+    final static String VIDEO_MIME_TYPE= "video/avc";
+    final static int VIDEO_BIT_RATE= 1200 * 1024;  // 1200 kbps
+    final static int VIDEO_FRAME_RATE= 24;
+    final static int VIDEO_GOP= 48;
 
     /**
      * {@link CaptureRequest.Builder} for the camera preview
@@ -613,7 +671,7 @@ public class Camera2BasicFragment extends Fragment
                 mImageReader.setOnImageAvailableListener(
                         mOnImageAvailableListener, mBackgroundHandler);
 
-                mPreviewReader = ImageReader.newInstance(largest.getWidth(), largest.getHeight(),
+                mPreviewReader = ImageReader.newInstance(MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT,
                         ImageFormat.YUV_420_888, /*maxImages*/2);
                 mPreviewReader.setOnImageAvailableListener(
                         mOnPreviewAvailableListener, mBackgroundHandler);
@@ -764,9 +822,6 @@ public class Camera2BasicFragment extends Fragment
         mBackgroundThread = new HandlerThread("CameraBackground");
         mBackgroundThread.start();
         mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
-
-        mImageProcessingThread= new Thread(mImageProcessingRunnable, "ImageProcessor");
-        mImageProcessingThread.start();
     }
 
     /**
@@ -779,9 +834,6 @@ public class Camera2BasicFragment extends Fragment
             mBackgroundThread.join();
             mBackgroundThread = null;
             mBackgroundHandler = null;
-
-            mImageProcessingThread.join();
-            mImageProcessingThread= null;
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -1022,12 +1074,41 @@ public class Camera2BasicFragment extends Fragment
 
     private void toggleRecord() throws IOException {
         ((Button)getView().findViewById(R.id.toggle_record)).setText(mMediaMuxer == null ? R.string.stop_record : R.string.start_record);
-        if (mMediaMuxer == null) {
-            File videoFileDir= getActivity().getDir("video", Context.MODE_PRIVATE);
-            File videoFile= new File(videoFileDir, "video.mp4");
+        if (!mRecording.get()) {
+            MediaFormat videoFormat = MediaFormat.createVideoFormat(VIDEO_MIME_TYPE, mPreviewReader.getWidth(), mPreviewReader.getHeight());
+            videoFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
+            videoFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
+            videoFormat.setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BIT_RATE);
+            videoFormat.setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FRAME_RATE);
+            videoFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VIDEO_GOP / VIDEO_FRAME_RATE);
+
+            mVideoCodec= MediaCodec.createEncoderByType(VIDEO_MIME_TYPE);
+            mVideoCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+
+            mVideoDir.mkdirs();
+            File videoFile= new File(mVideoDir, dateFormatter.format(new Date()) + ".mp4");
             mMediaMuxer= new MediaMuxer(videoFile.toString(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            mMediaMuxer.setOrientationHint(imageRotation);
+
+            mVideoCodec.start();
+            mFirstVideoTimeMonoNS= 0;
+            mRecording.set(true);
+
+            mRecordingThread = new Thread(mRecordingRunnable, "Recorder");
+            mRecordingThread.start();
         } else {
+            mRecording.set(false);
+            try { mRecordingThread.join(); } catch (InterruptedException e) { }
+
+            drainEncoder();
+
+            mMediaMuxer.stop();
+            mMediaMuxer.release();
             mMediaMuxer= null;
+
+            mVideoCodec.stop();
+            mVideoCodec.release();
+            mVideoCodec= null;
         }
     }
 
