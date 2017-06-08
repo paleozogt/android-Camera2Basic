@@ -65,7 +65,7 @@ public class ImageConverter {
     /**
      * If the input image is YUV_420_888, will output NV21.
      */
-    public byte[] getInterleavedDataFromImage(Image image) {
+    public byte[] getInterleavedDataFromImage(Image image, boolean yuv) {
         int format = image.getFormat();
         int width = image.getWidth();
         int height = image.getHeight();
@@ -80,9 +80,12 @@ public class ImageConverter {
             Image.Plane uPlane= planes[i++];
             Image.Plane vPlane= planes[i++];
 
+            Image.Plane firstPlane = yuv ? uPlane : vPlane;
+            Image.Plane secondPlane= yuv ? vPlane : uPlane;
+
             offset= copyPlane(yPlane, format, width, height, offset);
-            copyPlaneInterleaved(vPlane, format, width/2, height/2, offset);
-            copyPlaneInterleaved(uPlane, format, width/2, height/2, offset+bytesPerPixel);
+            copyPlaneInterleaved(firstPlane, format, width/2, height/2, offset);
+            copyPlaneInterleaved(secondPlane, format, width/2, height/2, offset+bytesPerPixel);
 
             return data;
         } else {

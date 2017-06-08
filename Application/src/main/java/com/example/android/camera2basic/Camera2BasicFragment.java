@@ -314,32 +314,27 @@ public class Camera2BasicFragment extends Fragment
     };
 
     void recordImage(Image image) {
-        // convert the data
         if (mImageConverter == null) mImageConverter= new ImageConverter(image);
-        byte[] imageBytes= mImageConverter.getInterleavedDataFromImage(image);
+        if (mFirstVideoTimeMonoNS == 0) mFirstVideoTimeMonoNS = image.getTimestamp();
 
-        // get the timestamp
-        long timestampMonoNS= image.getTimestamp();
-        if (mFirstVideoTimeMonoNS == 0) mFirstVideoTimeMonoNS = timestampMonoNS;
+        saveImage(image);
+        encodeImage(image);
 
-        // free up the image before we do any more work
         image.close();
-
-        saveImage(imageBytes, timestampMonoNS);
-        encodeImage(imageBytes, timestampMonoNS);
-
         mFrameCount++;
     }
 
-    void saveImage(byte[] imageBytes, long timestampMonoNS) {
-        long timestampEpochMS= mStartTimeEpochMS + nsToMs(timestampMonoNS - mFirstVideoTimeMonoNS);
+    void saveImage(Image image) {
+        long timestampEpochMS= mStartTimeEpochMS + nsToMs(image.getTimestamp() - mFirstVideoTimeMonoNS);
+        byte[] imageBytes= mImageConverter.getInterleavedDataFromImage(image, false);
 
         File imageFile= new File(mImagesDir, dateFormatter.format(new Date(timestampEpochMS)) + ".jpg");
         ImageUtils.saveYuvImage(imageBytes, mImageConverter.getWidth(), mImageConverter.getHeight(), imageRotation, imageFile);
     }
 
-    void encodeImage(byte[] imageBytes, long timestampMonoNS) {
-        long timestampMonoUS= nsToUs(timestampMonoNS - mFirstVideoTimeMonoNS);
+    void encodeImage(Image image) {
+        long timestampMonoUS= nsToUs(image.getTimestamp() - mFirstVideoTimeMonoNS);
+        byte[] imageBytes= mImageConverter.getInterleavedDataFromImage(image, true);
 
         // encode the frame
         int inputBufferIndex= mVideoCodec.dequeueInputBuffer(1);
