@@ -41,6 +41,8 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.MediaCodec;
@@ -48,9 +50,11 @@ import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaMetadataEditor;
 import android.media.MediaMuxer;
+import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.speech.srec.WaveHeader;
 import android.support.annotation.NonNull;
 import android.support.v13.app.FragmentCompat;
 import android.support.v4.content.ContextCompat;
@@ -65,9 +69,11 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -262,7 +268,8 @@ public class Camera2BasicFragment extends Fragment
     private int imageRotation;
 
     private File mOutputDir;
-    private File mImagesDir, mVideoDir;
+    private File mImagesDir, mVideoDir, mAudioDir;
+    private File mAudioFile;
 
     /**
      * This is the output file for our picture.
@@ -385,6 +392,46 @@ public class Camera2BasicFragment extends Fragment
     final static int VIDEO_BIT_RATE= 1200 * 1024;  // 1200 kbps
     final static int VIDEO_FRAME_RATE= 24;
     final static int VIDEO_GOP= 48;
+
+    public static int AUDIO_SAMPLE_RATE= 16000;
+    public static int AUDIO_CHANNEL_IN_CONFIG= AudioFormat.CHANNEL_IN_MONO;
+    public static int AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT;
+
+    AudioRecord mAudioRecord;
+    byte[] mAudioBuffer;
+    Thread mAudioThread;
+    WaveHeader mWaveHeader;
+    FileOutputStream mAudioOutputStream;
+
+    Runnable mAudioProcessor= new Runnable() {
+        @Override
+        public void run() {
+            try {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
+
+                while (mAudioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+                    int bytesRead = mAudioRecord.read(mAudioBuffer, 0, mAudioBuffer.length);
+                    Log.d(TAG, "read " + bytesRead);
+                    if (bytesRead > 0) recordAudio(mAudioBuffer, bytesRead);
+
+                    try {
+                        Thread.sleep(5);
+                    } catch (InterruptedException e) {
+                    }
+                }
+            } catch( Exception e ) {
+                e.printStackTrace();
+            }
+        }
+    };
+
+    void recordAudio(byte[] audioChunk, int len) {
+        try {
+            mWaveHeader.setNumBytes(mWaveHeader.getNumBytes() + len);
+            mAudioOutputStream.write(audioChunk, 0, len);
+        } catch (IOException e) {
+        }
+    }
 
     /**
      * {@link CaptureRequest.Builder} for the camera preview
@@ -598,7 +645,7 @@ public class Camera2BasicFragment extends Fragment
 
     @Override
     public void onPause() {
-        mFpsTimer.cancel();
+        if (mFpsTimer != null) mFpsTimer.cancel();
         closeCamera();
         stopBackgroundThread();
         super.onPause();
@@ -608,7 +655,7 @@ public class Camera2BasicFragment extends Fragment
         if (FragmentCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.CAMERA)) {
             new ConfirmationDialog().show(getChildFragmentManager(), FRAGMENT_DIALOG);
         } else {
-            FragmentCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA},
+            FragmentCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO},
                     REQUEST_CAMERA_PERMISSION);
         }
     }
@@ -617,7 +664,12 @@ public class Camera2BasicFragment extends Fragment
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
-            if (grantResults.length != 1 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            boolean allGranted= true;
+            for (int grantResult : grantResults) {
+                allGranted&= (grantResult == PackageManager.PERMISSION_GRANTED);
+            }
+
+            if (!allGranted) {
                 ErrorDialog.newInstance(getString(R.string.request_permission))
                         .show(getChildFragmentManager(), FRAGMENT_DIALOG);
             }
@@ -752,8 +804,9 @@ public class Camera2BasicFragment extends Fragment
      * Opens the camera specified by {@link Camera2BasicFragment#mCameraId}.
      */
     private void openCamera(int width, int height) {
-        if (ContextCompat.checkSelfPermission(getActivity(), Manifest.permission.CAMERA)
-                != PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(getActivity(), Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(getActivity(), Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED) {
             requestCameraPermission();
             return;
         }
@@ -1073,8 +1126,15 @@ public class Camera2BasicFragment extends Fragment
             mImagesDir.mkdirs();
             mVideoDir= new File(mOutputDir, "video");
             mVideoDir.mkdirs();
+            mAudioDir= new File(mOutputDir, "audio");
+            mAudioDir.mkdirs();
 
-            File videoFile= new File(mVideoDir, dateFormatter.format(new Date()) + ".mp4");
+            // start the audio file by writing the wav header before the audio starts coming in
+            mAudioFile= new File(mAudioDir, dateFormatter.format(new Date()) + ".wav");
+            mAudioOutputStream = new FileOutputStream(mAudioFile);
+            mWaveHeader= new WaveHeader(WaveHeader.FORMAT_PCM, (short)1, AUDIO_SAMPLE_RATE, (short)Short.SIZE, 0);
+            mWaveHeader.setNumBytes(0);
+            mWaveHeader.write(mAudioOutputStream);
 
             MediaFormat videoFormat = MediaFormat.createVideoFormat(VIDEO_MIME_TYPE, mPreviewReader.getWidth(), mPreviewReader.getHeight());
             videoFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
@@ -1086,20 +1146,42 @@ public class Camera2BasicFragment extends Fragment
             mVideoCodec= MediaCodec.createEncoderByType(VIDEO_MIME_TYPE);
             mVideoCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
 
+            File videoFile= new File(mVideoDir, dateFormatter.format(new Date()) + ".mp4");
             mMediaMuxer= new MediaMuxer(videoFile.toString(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             mMediaMuxer.setOrientationHint(imageRotation);
 
             mVideoCodec.start();
             mFirstVideoTimeMonoNS= 0;
-            mRecording.set(true);
 
             mRecordingThread = new Thread(mRecordingRunnable, "Recorder");
+
+            int minBufferSize= AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_IN_CONFIG, AUDIO_ENCODING);
+            mAudioBuffer= new byte[minBufferSize * 2];
+            mAudioRecord= new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_IN_CONFIG, AUDIO_ENCODING, minBufferSize);
+            mAudioRecord.startRecording();
+            mAudioThread= new Thread(mAudioProcessor, "Audio");
+
+            mRecording.set(true);
+            mAudioThread.start();
             mRecordingThread.start();
         } else {
             mRecording.set(false);
-            try { mRecordingThread.join(); } catch (InterruptedException e) { }
+            mAudioRecord.stop();
 
+            try { mRecordingThread.join(); } catch (InterruptedException e) { }
+            mRecordingThread= null;
+
+            try { mAudioThread.join(); } catch (InterruptedException e) { }
+            mAudioThread= null;
+
+            mAudioOutputStream.flush();
+            mAudioOutputStream.close();
+            mAudioOutputStream= null;
+            rewriteWavHeader();
             drainEncoder();
+
+            mAudioRecord.release();
+            mAudioRecord= null;
 
             mMediaMuxer.stop();
             mMediaMuxer.release();
@@ -1108,6 +1190,18 @@ public class Camera2BasicFragment extends Fragment
             mVideoCodec.stop();
             mVideoCodec.release();
             mVideoCodec= null;
+        }
+    }
+
+    protected void rewriteWavHeader() {
+        try {
+            // rewrite the header (now with the proper length)
+            ByteArrayOutputStream headerBytes= new ByteArrayOutputStream();
+            mWaveHeader.write(headerBytes);
+            RandomAccessFile audioRandomAccessFile= new RandomAccessFile(mAudioFile, "rwd");
+            audioRandomAccessFile.write(headerBytes.toByteArray());
+            audioRandomAccessFile.close();
+        } catch (IOException e) {
         }
     }
 
@@ -1248,7 +1342,7 @@ public class Camera2BasicFragment extends Fragment
                         @Override
                         public void onClick(DialogInterface dialog, int which) {
                             FragmentCompat.requestPermissions(parent,
-                                    new String[]{Manifest.permission.CAMERA},
+                                    new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO},
                                     REQUEST_CAMERA_PERMISSION);
                         }
                     })
