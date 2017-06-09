@@ -393,12 +393,16 @@ public class Camera2BasicFragment extends Fragment
         }
     }
 
-    long nsToMs(long ns) {
+    static long nsToMs(long ns) {
         return (long)(ns * 1e-6);
     }
 
-    long nsToUs(long ns) {
+    static long nsToUs(long ns) {
         return (long)(ns * 1e-3);
+    }
+
+    static long secsToNS(float secs) {
+        return (long)(secs * 1e9);
     }
 
     AtomicBoolean mRecording = new AtomicBoolean();
@@ -420,6 +424,8 @@ public class Camera2BasicFragment extends Fragment
     public static int AUDIO_SAMPLE_RATE= 16000;
     public static int AUDIO_CHANNEL_IN_CONFIG= AudioFormat.CHANNEL_IN_MONO;
     public static int AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT;
+    public static short AUDIO_SAMPLE_SIZE_BITS= Short.SIZE;
+    public static int AUDIO_SAMPLE_SIZE_BYTES= AUDIO_SAMPLE_SIZE_BITS/8;
 
     AudioRecord mAudioRecord;
     byte[] mAudioBuffer;
@@ -432,10 +438,20 @@ public class Camera2BasicFragment extends Fragment
         public void run() {
             try {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
+                long timestampMonoNS= 0;
 
                 while (mAudioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
                     int bytesRead = mAudioRecord.read(mAudioBuffer, 0, mAudioBuffer.length);
-                    if (bytesRead > 0) recordAudio(System.nanoTime(), mAudioBuffer, bytesRead);
+                    if (bytesRead > 0) {
+                        long chunkNS= audioBytesToTimeNS(bytesRead, AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_SIZE_BYTES);
+                        if (timestampMonoNS == 0) {
+                            timestampMonoNS= System.nanoTime() - chunkNS;
+                        } else {
+                            timestampMonoNS+= chunkNS;
+                        }
+
+                        recordAudio(timestampMonoNS, mAudioBuffer, bytesRead);
+                    }
 
                     try {
                         Thread.sleep(5);
@@ -450,8 +466,8 @@ public class Camera2BasicFragment extends Fragment
 
     void recordAudio(long timestampMonoNS, byte[] audioChunk, int len) {
         try {
-            mLastVideoTimeMonoNS = timestampMonoNS;
-            if (mFirstAudioTimeMonoNS == 0) mFirstAudioTimeMonoNS = mLastVideoTimeMonoNS;
+            mLastAudioTimeMonoNS = timestampMonoNS;
+            if (mFirstAudioTimeMonoNS == 0) mFirstAudioTimeMonoNS = mLastAudioTimeMonoNS;
 
             mWaveHeader.setNumBytes(mWaveHeader.getNumBytes() + len);
             mAudioOutputStream.write(audioChunk, 0, len);
@@ -473,6 +489,11 @@ public class Camera2BasicFragment extends Fragment
         }
 
         drainEncoder(mAudioCodec, mAudioTrackIndex, mAudioCodecBufferInfo);
+    }
+
+    static long audioBytesToTimeNS(long numBytes, int sampleRate, int sampleSize) {
+        float timeSecs= numBytes / (float)sampleRate / (float)sampleSize;
+        return secsToNS(timeSecs);
     }
 
     /**
@@ -1174,7 +1195,7 @@ public class Camera2BasicFragment extends Fragment
             // start the audio file by writing the wav header before the audio starts coming in
             mAudioFile= new File(mAudioDir, dateFormatter.format(new Date()) + ".wav");
             mAudioOutputStream = new FileOutputStream(mAudioFile);
-            mWaveHeader= new WaveHeader(WaveHeader.FORMAT_PCM, (short)1, AUDIO_SAMPLE_RATE, (short)Short.SIZE, 0);
+            mWaveHeader= new WaveHeader(WaveHeader.FORMAT_PCM, (short)1, AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_SIZE_BITS, 0);
             mWaveHeader.setNumBytes(0);
             mWaveHeader.write(mAudioOutputStream);
 
@@ -1211,8 +1232,8 @@ public class Camera2BasicFragment extends Fragment
             mFirstAudioTimeMonoNS= 0;
             mNumReadyCodecs.set(0);
             mRecording.set(true);
-            mAudioThread.start();
             mVideoRecordingThread.start();
+            mAudioThread.start();
         } else {
             mRecording.set(false);
             mAudioRecord.stop();
