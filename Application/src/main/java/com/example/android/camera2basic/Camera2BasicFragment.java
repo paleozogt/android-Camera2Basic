@@ -48,7 +48,6 @@ import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
-import android.media.MediaMetadataEditor;
 import android.media.MediaMuxer;
 import android.media.MediaRecorder;
 import android.os.Bundle;
@@ -59,6 +58,7 @@ import android.support.annotation.NonNull;
 import android.support.v13.app.FragmentCompat;
 import android.support.v4.content.ContextCompat;
 import android.util.Log;
+import android.util.MutableInt;
 import android.util.Size;
 import android.util.SparseIntArray;
 import android.view.LayoutInflater;
@@ -88,6 +88,7 @@ import java.util.TimerTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class Camera2BasicFragment extends Fragment
@@ -258,11 +259,12 @@ public class Camera2BasicFragment extends Fragment
 
     private ImageReader mPreviewReader;
     private ImageConverter mImageConverter;
-    private Thread mRecordingThread;
+    private Thread mVideoRecordingThread;
     private AtomicReference<Image> mImageRef= new AtomicReference<>();
 
     private long mStartTimeEpochMS;
-    private long mFirstVideoTimeMonoNS;
+    private long mFirstVideoTimeMonoNS, mFirstAudioTimeMonoNS;
+    private long mLastVideoTimeMonoNS, mLastAudioTimeMonoNS;
     private SimpleDateFormat dateFormatter;
 
     private int imageRotation;
@@ -305,7 +307,7 @@ public class Camera2BasicFragment extends Fragment
         }
     };
 
-    private final Runnable mRecordingRunnable = new Runnable() {
+    private final Runnable mVideoRecordingRunnable = new Runnable() {
         @Override
         public void run() {
             // clear out whatever's in the ref (it may be old)
@@ -326,7 +328,8 @@ public class Camera2BasicFragment extends Fragment
 
     void recordImage(Image image) {
         if (mImageConverter == null) mImageConverter= new ImageConverter(image);
-        if (mFirstVideoTimeMonoNS == 0) mFirstVideoTimeMonoNS = image.getTimestamp();
+        mLastVideoTimeMonoNS = image.getTimestamp();
+        if (mFirstVideoTimeMonoNS == 0) mFirstVideoTimeMonoNS = mLastVideoTimeMonoNS;
 
         saveImage(image);
         encodeImage(image);
@@ -355,19 +358,35 @@ public class Camera2BasicFragment extends Fragment
             mVideoCodec.queueInputBuffer(inputBufferIndex, 0, imageBytes.length, timestampMonoUS, 0);
         }
 
-        drainEncoder();
+        drainEncoder(mVideoCodec, mVideoTrackIndex, mVideoCodecBufferInfo);
     }
 
-    void drainEncoder() {
+    void addEndOfStream(MediaCodec codec, MutableInt trackIndex, MediaCodec.BufferInfo bufferInfo, long timestampMonoUS) {
+        // encode the frame
+        int inputBufferIndex= codec.dequeueInputBuffer(-1);
+        if (inputBufferIndex >= 0) {
+            codec.queueInputBuffer(inputBufferIndex, 0, 0, timestampMonoUS+1, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+        }
+
+        drainEncoder(codec, trackIndex, bufferInfo);
+    }
+
+    void drainEncoder(MediaCodec codec, MutableInt trackIndex, MediaCodec.BufferInfo bufferInfo) {
         while (true) {
-            int outputBufferIndex= mVideoCodec.dequeueOutputBuffer(mVideoCodecBufferInfo, 1);
+            int outputBufferIndex= codec.dequeueOutputBuffer(bufferInfo, 1);
             if (outputBufferIndex >= 0) {
-                ByteBuffer outputBuffer = mVideoCodec.getOutputBuffer(outputBufferIndex);
-                mMediaMuxer.writeSampleData(mVideoTrackIndex, outputBuffer, mVideoCodecBufferInfo);
-                mVideoCodec.releaseOutputBuffer(outputBufferIndex, false);
+                if (mNumReadyCodecs.get() == NUM_TRACKS) {
+                    ByteBuffer outputBuffer = codec.getOutputBuffer(outputBufferIndex);
+                    mMediaMuxer.writeSampleData(trackIndex.value, outputBuffer, bufferInfo);
+                }
+                codec.releaseOutputBuffer(outputBufferIndex, false);
             } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                mVideoTrackIndex= mMediaMuxer.addTrack(mVideoCodec.getOutputFormat());
-                mMediaMuxer.start();
+                trackIndex.value= mMediaMuxer.addTrack(codec.getOutputFormat());
+                if (mNumReadyCodecs.incrementAndGet() == NUM_TRACKS) {
+                    mMediaMuxer.start();
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
@@ -384,12 +403,17 @@ public class Camera2BasicFragment extends Fragment
 
     AtomicBoolean mRecording = new AtomicBoolean();
     MediaMuxer mMediaMuxer;
-    MediaCodec mVideoCodec;
-    int mVideoTrackIndex;
+    MediaCodec mVideoCodec, mAudioCodec;
+    MutableInt mVideoTrackIndex= new MutableInt(0), mAudioTrackIndex= new MutableInt(0);
     MediaCodec.BufferInfo mVideoCodecBufferInfo= new MediaCodec.BufferInfo();
+    MediaCodec.BufferInfo mAudioCodecBufferInfo= new MediaCodec.BufferInfo();
+    final static int NUM_TRACKS= 2;
+    AtomicInteger mNumReadyCodecs= new AtomicInteger();
 
     final static String VIDEO_MIME_TYPE= "video/avc";
+    final static String AUDIO_MIME_TYPE= "audio/mp4a-latm";
     final static int VIDEO_BIT_RATE= 1200 * 1024;  // 1200 kbps
+    final static int AUDIO_BIT_RATE=  128 * 1024;  // 128 kbps
     final static int VIDEO_FRAME_RATE= 24;
     final static int VIDEO_GOP= 48;
 
@@ -411,8 +435,7 @@ public class Camera2BasicFragment extends Fragment
 
                 while (mAudioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
                     int bytesRead = mAudioRecord.read(mAudioBuffer, 0, mAudioBuffer.length);
-                    Log.d(TAG, "read " + bytesRead);
-                    if (bytesRead > 0) recordAudio(mAudioBuffer, bytesRead);
+                    if (bytesRead > 0) recordAudio(System.nanoTime(), mAudioBuffer, bytesRead);
 
                     try {
                         Thread.sleep(5);
@@ -425,12 +448,31 @@ public class Camera2BasicFragment extends Fragment
         }
     };
 
-    void recordAudio(byte[] audioChunk, int len) {
+    void recordAudio(long timestampMonoNS, byte[] audioChunk, int len) {
         try {
+            mLastVideoTimeMonoNS = timestampMonoNS;
+            if (mFirstAudioTimeMonoNS == 0) mFirstAudioTimeMonoNS = mLastVideoTimeMonoNS;
+
             mWaveHeader.setNumBytes(mWaveHeader.getNumBytes() + len);
             mAudioOutputStream.write(audioChunk, 0, len);
+
+            encodeAudio(timestampMonoNS, audioChunk, len);
         } catch (IOException e) {
         }
+    }
+
+    void encodeAudio(long timestampMonoNS, byte[] audioChunk, int len) {
+        long timestampMonoUS= nsToUs(timestampMonoNS - mFirstAudioTimeMonoNS);
+
+        // encode the frame
+        int inputBufferIndex= mAudioCodec.dequeueInputBuffer(1);
+        if (inputBufferIndex >= 0) {
+            ByteBuffer inputBuffer= mAudioCodec.getInputBuffer(inputBufferIndex);
+            inputBuffer.put(audioChunk, 0, len);
+            mAudioCodec.queueInputBuffer(inputBufferIndex, 0, len, timestampMonoUS, 0);
+        }
+
+        drainEncoder(mAudioCodec, mAudioTrackIndex, mAudioCodecBufferInfo);
     }
 
     /**
@@ -1142,18 +1184,22 @@ public class Camera2BasicFragment extends Fragment
             videoFormat.setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BIT_RATE);
             videoFormat.setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FRAME_RATE);
             videoFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VIDEO_GOP / VIDEO_FRAME_RATE);
-
             mVideoCodec= MediaCodec.createEncoderByType(VIDEO_MIME_TYPE);
             mVideoCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            mVideoCodec.start();
+
+            MediaFormat audioFormat= MediaFormat.createAudioFormat(AUDIO_MIME_TYPE, AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_IN_CONFIG == AudioFormat.CHANNEL_IN_MONO ? 1 : 2);
+            audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE);
+            audioFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
+            mAudioCodec= MediaCodec.createEncoderByType(AUDIO_MIME_TYPE);
+            mAudioCodec.configure(audioFormat, null,null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            mAudioCodec.start();
 
             File videoFile= new File(mVideoDir, dateFormatter.format(new Date()) + ".mp4");
             mMediaMuxer= new MediaMuxer(videoFile.toString(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             mMediaMuxer.setOrientationHint(imageRotation);
 
-            mVideoCodec.start();
-            mFirstVideoTimeMonoNS= 0;
-
-            mRecordingThread = new Thread(mRecordingRunnable, "Recorder");
+            mVideoRecordingThread = new Thread(mVideoRecordingRunnable, "Video");
 
             int minBufferSize= AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_IN_CONFIG, AUDIO_ENCODING);
             mAudioBuffer= new byte[minBufferSize * 2];
@@ -1161,35 +1207,45 @@ public class Camera2BasicFragment extends Fragment
             mAudioRecord.startRecording();
             mAudioThread= new Thread(mAudioProcessor, "Audio");
 
+            mFirstVideoTimeMonoNS= 0;
+            mFirstAudioTimeMonoNS= 0;
+            mNumReadyCodecs.set(0);
             mRecording.set(true);
             mAudioThread.start();
-            mRecordingThread.start();
+            mVideoRecordingThread.start();
         } else {
             mRecording.set(false);
             mAudioRecord.stop();
 
-            try { mRecordingThread.join(); } catch (InterruptedException e) { }
-            mRecordingThread= null;
+            try { mVideoRecordingThread.join(); } catch (InterruptedException e) { }
+            mVideoRecordingThread = null;
 
             try { mAudioThread.join(); } catch (InterruptedException e) { }
             mAudioThread= null;
+            mAudioRecord.release();
+            mAudioRecord= null;
 
+            // finish up wav file
             mAudioOutputStream.flush();
             mAudioOutputStream.close();
             mAudioOutputStream= null;
             rewriteWavHeader();
-            drainEncoder();
 
-            mAudioRecord.release();
-            mAudioRecord= null;
+            // finish up video file
+            addEndOfStream(mVideoCodec, mVideoTrackIndex, mVideoCodecBufferInfo, mLastVideoTimeMonoNS);
+            addEndOfStream(mAudioCodec, mAudioTrackIndex, mAudioCodecBufferInfo, mLastAudioTimeMonoNS);
 
-            mMediaMuxer.stop();
-            mMediaMuxer.release();
-            mMediaMuxer= null;
+            mAudioCodec.stop();
+            mAudioCodec.release();
+            mAudioCodec= null;
 
             mVideoCodec.stop();
             mVideoCodec.release();
             mVideoCodec= null;
+
+            mMediaMuxer.stop();
+            mMediaMuxer.release();
+            mMediaMuxer= null;
         }
     }
 
