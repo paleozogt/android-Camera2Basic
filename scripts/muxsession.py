@@ -2,11 +2,13 @@
 
 import argparse
 import dateutil.parser
+import datetime
 import subprocess
 import tempfile
 from glob import glob
 from os import path, remove
 
+import wave
 import PIL.Image
 import PIL.ExifTags
 
@@ -39,9 +41,13 @@ def get_image_orientation(image_path):
     else:
         return 0
 
+def get_audio_duration(wav_path):
+    f= wave.open(wav_path, 'r')
+    return f.getnframes() / float(f.getframerate())
+
 # see http://ffmpeg.org/ffmpeg-formats.html#concat-1
 #
-def make_concat_script(image_files):
+def make_concat_script(image_files, audio_end_timestamp):
     concat_script= ['ffconcat version 1.0']
 
     file= image_files[0]
@@ -57,6 +63,11 @@ def make_concat_script(image_files):
 
         last_timestamp= timestamp
 
+    # pad duration out to end of the audio
+    duration= (audio_end_timestamp - last_timestamp).total_seconds()
+    if (duration > 0):
+        concat_script.append("duration %f" % duration)
+
     return '\n'.join(concat_script)
 
 def mux_session(session_path, output_file):
@@ -65,14 +76,15 @@ def mux_session(session_path, output_file):
 
     orientation= get_image_orientation(image_files[0])
 
-    concat_script_path= path.join(tempfile.gettempdir(), "concat_script.txt")
-    with open(concat_script_path, 'w') as file:
-        file.write(make_concat_script(image_files))
-
     image_timestamp= parse_timestamp(image_files[0])
     audio_timestamp= parse_timestamp(audio_file)
+    audio_end_timestamp= audio_timestamp + datetime.timedelta(seconds=get_audio_duration(audio_file))
     session_timestamp= parse_timestamp(session_path, strip_ext=False)
     audio_delay= (audio_timestamp - image_timestamp).total_seconds()
+
+    concat_script_path= path.join(tempfile.gettempdir(), "concat_script.txt")
+    with open(concat_script_path, 'w') as file:
+        file.write(make_concat_script(image_files, audio_end_timestamp))
 
     temp_video_path= path.join(tempfile.gettempdir(), "video.mp4")
 
