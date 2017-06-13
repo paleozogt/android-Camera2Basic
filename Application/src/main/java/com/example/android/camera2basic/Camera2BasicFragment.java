@@ -91,6 +91,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import hirondelle.date4j.DateTime;
+
 public class Camera2BasicFragment extends Fragment
         implements View.OnClickListener, FragmentCompat.OnRequestPermissionsResultCallback {
 
@@ -265,7 +267,7 @@ public class Camera2BasicFragment extends Fragment
     private long mStartTimeEpochNS;
     private long mFirstVideoTimeMonoNS, mFirstAudioTimeMonoNS;
     private long mLastVideoTimeMonoNS, mLastAudioTimeMonoNS;
-    private SimpleDateFormat dateFormatter;
+    private static String ISO_8601_FORMAT= "YYYYMMDD|T|hhmmss.ffffff|Z|";
 
     private int imageRotation;
 
@@ -339,10 +341,12 @@ public class Camera2BasicFragment extends Fragment
     }
 
     void saveImage(Image image) {
-        long timestampEpochMS= nsToMs(mStartTimeEpochNS + (image.getTimestamp() - mFirstVideoTimeMonoNS));
         byte[] imageBytes= mImageConverter.getInterleavedDataFromImage(image, false);
 
-        File imageFile= new File(mImagesDir, dateFormatter.format(new Date(timestampEpochMS)) + ".jpg");
+        long timestampEpochNS= mStartTimeEpochNS + (image.getTimestamp() - mFirstVideoTimeMonoNS);
+        DateTime dateTimeImage= DateTime.forInstantNanos(timestampEpochNS, TimeZone.getTimeZone("UTC"));
+
+        File imageFile= new File(mImagesDir, dateTimeImage.format(ISO_8601_FORMAT) + ".jpg");
         ImageUtils.saveYuvImage(imageBytes, mImageConverter.getWidth(), mImageConverter.getHeight(), imageRotation, imageFile);
     }
 
@@ -686,9 +690,6 @@ public class Camera2BasicFragment extends Fragment
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
-
-        dateFormatter= new SimpleDateFormat("yyyyMMdd'T'HHmmss.SSS'Z'");
-        dateFormatter.setTimeZone(TimeZone.getTimeZone("UTC"));
 
         mFile = new File(getActivity().getExternalFilesDir(null), "pic.jpg");
     }
@@ -1192,8 +1193,9 @@ public class Camera2BasicFragment extends Fragment
         Log.d(TAG, "toggleRecord to " + !isRecording);
         if (!isRecording) {
             mStartTimeEpochNS = currentTimeNanos();
+            DateTime dateTime= DateTime.forInstantNanos(mStartTimeEpochNS, TimeZone.getTimeZone("UTC"));
 
-            mOutputDir= new File(new File(getActivity().getExternalFilesDir(null), "media"), dateFormatter.format(new Date(nsToMs(mStartTimeEpochNS))));
+            mOutputDir= new File(new File(getActivity().getExternalFilesDir(null), "media"), dateTime.format(ISO_8601_FORMAT));
             mImagesDir= new File(mOutputDir, "images");
             mImagesDir.mkdirs();
             mVideoDir= new File(mOutputDir, "video");
@@ -1202,7 +1204,7 @@ public class Camera2BasicFragment extends Fragment
             mAudioDir.mkdirs();
 
             // start the audio file by writing the wav header before the audio starts coming in
-            mAudioFile= new File(mAudioDir, dateFormatter.format(new Date(nsToMs(mStartTimeEpochNS))) + ".wav");
+            mAudioFile= new File(mAudioDir, dateTime.format(ISO_8601_FORMAT) + ".wav");
             mAudioOutputStream = new FileOutputStream(mAudioFile);
             mWaveHeader= new WaveHeader(WaveHeader.FORMAT_PCM, (short)1, AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_SIZE_BITS, 0);
             mWaveHeader.setNumBytes(0);
@@ -1225,7 +1227,7 @@ public class Camera2BasicFragment extends Fragment
             mAudioCodec.configure(audioFormat, null,null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             mAudioCodec.start();
 
-            File videoFile= new File(mVideoDir, dateFormatter.format(new Date(nsToMs(mStartTimeEpochNS))) + ".mp4");
+            File videoFile= new File(mVideoDir, dateTime.format(ISO_8601_FORMAT) + ".mp4");
             mMediaMuxer= new MediaMuxer(videoFile.toString(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             mMediaMuxer.setOrientationHint(imageRotation);
 
