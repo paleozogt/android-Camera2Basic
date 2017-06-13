@@ -1007,7 +1007,6 @@ public class Camera2BasicFragment extends Fragment
                                 setAutoFlash(mPreviewRequestBuilder);
 
                                 // Finally, we start displaying the camera preview.
-                                mStartTimeEpochNS = currentTimeNanos();
                                 mPreviewRequest = mPreviewRequestBuilder.build();
                                 mCaptureSession.setRepeatingRequest(mPreviewRequest,
                                         mCaptureCallback, mBackgroundHandler);
@@ -1187,7 +1186,9 @@ public class Camera2BasicFragment extends Fragment
 
         Log.d(TAG, "toggleRecord to " + !isRecording);
         if (!isRecording) {
-            mOutputDir= new File(new File(getActivity().getExternalFilesDir(null), "media"), dateFormatter.format(new Date()));
+            mStartTimeEpochNS = currentTimeNanos();
+
+            mOutputDir= new File(new File(getActivity().getExternalFilesDir(null), "media"), dateFormatter.format(new Date(nsToMs(mStartTimeEpochNS))));
             mImagesDir= new File(mOutputDir, "images");
             mImagesDir.mkdirs();
             mVideoDir= new File(mOutputDir, "video");
@@ -1196,7 +1197,7 @@ public class Camera2BasicFragment extends Fragment
             mAudioDir.mkdirs();
 
             // start the audio file by writing the wav header before the audio starts coming in
-            mAudioFile= new File(mAudioDir, dateFormatter.format(new Date()) + ".wav");
+            mAudioFile= new File(mAudioDir, dateFormatter.format(new Date(nsToMs(mStartTimeEpochNS))) + ".wav");
             mAudioOutputStream = new FileOutputStream(mAudioFile);
             mWaveHeader= new WaveHeader(WaveHeader.FORMAT_PCM, (short)1, AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_SIZE_BITS, 0);
             mWaveHeader.setNumBytes(0);
@@ -1219,7 +1220,7 @@ public class Camera2BasicFragment extends Fragment
             mAudioCodec.configure(audioFormat, null,null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             mAudioCodec.start();
 
-            File videoFile= new File(mVideoDir, dateFormatter.format(new Date()) + ".mp4");
+            File videoFile= new File(mVideoDir, dateFormatter.format(new Date(nsToMs(mStartTimeEpochNS))) + ".mp4");
             mMediaMuxer= new MediaMuxer(videoFile.toString(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             mMediaMuxer.setOrientationHint(imageRotation);
 
