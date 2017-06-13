@@ -262,7 +262,7 @@ public class Camera2BasicFragment extends Fragment
     private Thread mVideoRecordingThread;
     private AtomicReference<Image> mImageRef= new AtomicReference<>();
 
-    private long mStartTimeEpochMS;
+    private long mStartTimeEpochNS;
     private long mFirstVideoTimeMonoNS, mFirstAudioTimeMonoNS;
     private long mLastVideoTimeMonoNS, mLastAudioTimeMonoNS;
     private SimpleDateFormat dateFormatter;
@@ -329,7 +329,7 @@ public class Camera2BasicFragment extends Fragment
     void recordImage(Image image) {
         if (mImageConverter == null) mImageConverter= new ImageConverter(image);
         mLastVideoTimeMonoNS = image.getTimestamp();
-        if (mFirstVideoTimeMonoNS == 0) mFirstVideoTimeMonoNS = mLastVideoTimeMonoNS;
+        if (mFirstVideoTimeMonoNS == -1) mFirstVideoTimeMonoNS = mLastVideoTimeMonoNS;
 
         saveImage(image);
         encodeImage(image);
@@ -339,7 +339,7 @@ public class Camera2BasicFragment extends Fragment
     }
 
     void saveImage(Image image) {
-        long timestampEpochMS= mStartTimeEpochMS + nsToMs(image.getTimestamp() - mFirstVideoTimeMonoNS);
+        long timestampEpochMS= nsToMs(mStartTimeEpochNS + (image.getTimestamp() - mFirstVideoTimeMonoNS));
         byte[] imageBytes= mImageConverter.getInterleavedDataFromImage(image, false);
 
         File imageFile= new File(mImagesDir, dateFormatter.format(new Date(timestampEpochMS)) + ".jpg");
@@ -397,12 +397,20 @@ public class Camera2BasicFragment extends Fragment
         return (long)(ns * 1e-6);
     }
 
+    static long msToNs(long ms) {
+        return (long)(ms * 1e6);
+    }
+
     static long nsToUs(long ns) {
         return (long)(ns * 1e-3);
     }
 
     static long secsToNS(float secs) {
         return (long)(secs * 1e9);
+    }
+
+    static long currentTimeNanos() {
+        return msToNs(System.currentTimeMillis());
     }
 
     AtomicBoolean mRecording = new AtomicBoolean();
@@ -444,13 +452,8 @@ public class Camera2BasicFragment extends Fragment
                     int bytesRead = mAudioRecord.read(mAudioBuffer, 0, mAudioBuffer.length);
                     if (bytesRead > 0) {
                         long chunkNS= audioBytesToTimeNS(bytesRead, AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_SIZE_BYTES);
-                        if (timestampMonoNS == 0) {
-                            timestampMonoNS= System.nanoTime() - chunkNS;
-                        } else {
-                            timestampMonoNS+= chunkNS;
-                        }
-
                         recordAudio(timestampMonoNS, mAudioBuffer, bytesRead);
+                        timestampMonoNS+= chunkNS;
                     }
 
                     try {
@@ -467,7 +470,7 @@ public class Camera2BasicFragment extends Fragment
     void recordAudio(long timestampMonoNS, byte[] audioChunk, int len) {
         try {
             mLastAudioTimeMonoNS = timestampMonoNS;
-            if (mFirstAudioTimeMonoNS == 0) mFirstAudioTimeMonoNS = mLastAudioTimeMonoNS;
+            if (mFirstAudioTimeMonoNS == -1) mFirstAudioTimeMonoNS = mLastAudioTimeMonoNS;
 
             mWaveHeader.setNumBytes(mWaveHeader.getNumBytes() + len);
             mAudioOutputStream.write(audioChunk, 0, len);
@@ -1004,7 +1007,7 @@ public class Camera2BasicFragment extends Fragment
                                 setAutoFlash(mPreviewRequestBuilder);
 
                                 // Finally, we start displaying the camera preview.
-                                mStartTimeEpochMS= System.currentTimeMillis();
+                                mStartTimeEpochNS = currentTimeNanos();
                                 mPreviewRequest = mPreviewRequestBuilder.build();
                                 mCaptureSession.setRepeatingRequest(mPreviewRequest,
                                         mCaptureCallback, mBackgroundHandler);
@@ -1228,8 +1231,7 @@ public class Camera2BasicFragment extends Fragment
             mAudioRecord.startRecording();
             mAudioThread= new Thread(mAudioProcessor, "Audio");
 
-            mFirstVideoTimeMonoNS= 0;
-            mFirstAudioTimeMonoNS= 0;
+            mFirstVideoTimeMonoNS= mFirstAudioTimeMonoNS= -1;
             mNumReadyCodecs.set(0);
             mRecording.set(true);
             mVideoRecordingThread.start();
