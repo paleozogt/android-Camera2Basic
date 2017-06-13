@@ -102,10 +102,10 @@ public class Camera2BasicFragment extends Fragment
     private static final String FRAGMENT_DIALOG = "dialog";
 
     static {
-        ORIENTATIONS.append(Surface.ROTATION_0, 90);
-        ORIENTATIONS.append(Surface.ROTATION_90, 0);
-        ORIENTATIONS.append(Surface.ROTATION_180, 270);
-        ORIENTATIONS.append(Surface.ROTATION_270, 180);
+        ORIENTATIONS.append(Surface.ROTATION_0, 0);
+        ORIENTATIONS.append(Surface.ROTATION_90, 90);
+        ORIENTATIONS.append(Surface.ROTATION_180, 180);
+        ORIENTATIONS.append(Surface.ROTATION_270, 270);
     }
 
     /**
@@ -808,7 +808,8 @@ public class Camera2BasicFragment extends Fragment
                 }
 
                 int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-                imageRotation= getOrientation(rotation);
+                imageRotation= getOrientation(rotation, facing.intValue());
+                Log.d(TAG, "imageRotation " + imageRotation);
 
                 Point displaySize = new Point();
                 activity.getWindowManager().getDefaultDisplay().getSize(displaySize);
@@ -1123,7 +1124,7 @@ public class Camera2BasicFragment extends Fragment
             setAutoFlash(captureBuilder);
 
             // Orientation
-            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, getOrientation(imageRotation));
+            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, imageRotation);
 
             CameraCaptureSession.CaptureCallback CaptureCallback
                     = new CameraCaptureSession.CaptureCallback() {
@@ -1151,12 +1152,16 @@ public class Camera2BasicFragment extends Fragment
      * @param rotation The screen rotation.
      * @return The JPEG orientation (one of 0, 90, 270, and 360)
      */
-    private int getOrientation(int rotation) {
+    private int getOrientation(int rotation, int facing) {
         // Sensor orientation is 90 for most devices, or 270 for some devices (eg. Nexus 5X)
         // We have to take that into account and rotate JPEG properly.
         // For devices with orientation of 90, we simply return our mapping from ORIENTATIONS.
         // For devices with orientation of 270, we need to rotate the JPEG 180 degrees.
-        return (ORIENTATIONS.get(rotation) + mSensorOrientation + 270) % 360;
+        if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
+            return (ORIENTATIONS.get(rotation) + mSensorOrientation) % 360;
+        } else {
+            return (ORIENTATIONS.get(rotation) + mSensorOrientation + 360) % 360;
+        }
     }
 
     /**
