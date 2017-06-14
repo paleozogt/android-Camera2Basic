@@ -495,7 +495,11 @@ public class Camera2BasicFragment extends Fragment
             mAudioCodec.queueInputBuffer(inputBufferIndex, 0, len, timestampMonoUS, 0);
         }
 
-        drainEncoder(mAudioCodec, mAudioTrackIndex, mAudioCodecBufferInfo);
+        // don't start draining until the video codec is ready
+        // (the expectation is that the video track is always first)
+        if (mNumReadyCodecs.get() > 0) {
+            drainEncoder(mAudioCodec, mAudioTrackIndex, mAudioCodecBufferInfo);
+        }
     }
 
     static long audioBytesToTimeNS(long numBytes, int sampleRate, int sampleSize) {
