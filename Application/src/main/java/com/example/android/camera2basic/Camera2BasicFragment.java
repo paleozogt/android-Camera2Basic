@@ -1267,8 +1267,8 @@ public class Camera2BasicFragment extends Fragment
             rewriteWavHeader();
 
             // finish up video file
-            addEndOfStream(mVideoCodec, mVideoTrackIndex, mVideoCodecBufferInfo, mLastVideoTimeMonoNS);
-            addEndOfStream(mAudioCodec, mAudioTrackIndex, mAudioCodecBufferInfo, mLastAudioTimeMonoNS);
+            addEndOfStream(mVideoCodec, mVideoTrackIndex, mVideoCodecBufferInfo, nsToUs(mLastVideoTimeMonoNS));
+            addEndOfStream(mAudioCodec, mAudioTrackIndex, mAudioCodecBufferInfo, nsToUs(mLastAudioTimeMonoNS));
 
             mAudioCodec.stop();
             mAudioCodec.release();
