@@ -476,6 +476,18 @@ public class Camera2BasicFragment extends Fragment
             mLastAudioTimeMonoNS = timestampMonoNS;
             if (mFirstAudioTimeMonoNS == -1) mFirstAudioTimeMonoNS = mLastAudioTimeMonoNS;
 
+            if (mAudioOutputStream == null) {
+                long timestampEpochNS= mStartTimeEpochNS + (timestampMonoNS - mFirstAudioTimeMonoNS);
+                DateTime dateTimeAudio= DateTime.forInstantNanos(timestampEpochNS, TimeZone.getTimeZone("UTC"));
+
+                // start the audio file by writing the wav header before the audio starts coming in
+                mAudioFile= new File(mAudioDir, dateTimeAudio.format(ISO_8601_FORMAT) + ".wav");
+                mAudioOutputStream = new FileOutputStream(mAudioFile);
+                mWaveHeader= new WaveHeader(WaveHeader.FORMAT_PCM, (short)1, AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_SIZE_BITS, 0);
+                mWaveHeader.setNumBytes(0);
+                mWaveHeader.write(mAudioOutputStream);
+            }
+
             mWaveHeader.setNumBytes(mWaveHeader.getNumBytes() + len);
             mAudioOutputStream.write(audioChunk, 0, len);
 
@@ -1207,13 +1219,6 @@ public class Camera2BasicFragment extends Fragment
             mAudioDir= new File(mOutputDir, "audio");
             mAudioDir.mkdirs();
 
-            // start the audio file by writing the wav header before the audio starts coming in
-            mAudioFile= new File(mAudioDir, dateTime.format(ISO_8601_FORMAT) + ".wav");
-            mAudioOutputStream = new FileOutputStream(mAudioFile);
-            mWaveHeader= new WaveHeader(WaveHeader.FORMAT_PCM, (short)1, AUDIO_SAMPLE_RATE, AUDIO_SAMPLE_SIZE_BITS, 0);
-            mWaveHeader.setNumBytes(0);
-            mWaveHeader.write(mAudioOutputStream);
-
             MediaFormat videoFormat = MediaFormat.createVideoFormat(VIDEO_MIME_TYPE, mPreviewReader.getWidth(), mPreviewReader.getHeight());
             videoFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
             videoFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
@@ -1265,6 +1270,7 @@ public class Camera2BasicFragment extends Fragment
             mAudioOutputStream.close();
             mAudioOutputStream= null;
             rewriteWavHeader();
+            mAudioFile= null;
 
             // finish up video file
             addEndOfStream(mVideoCodec, mVideoTrackIndex, mVideoCodecBufferInfo, nsToUs(mLastVideoTimeMonoNS - mFirstVideoTimeMonoNS));
